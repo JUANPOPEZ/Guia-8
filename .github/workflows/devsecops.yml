@@ -9,6 +9,7 @@ on:
 jobs:
   devsecops-quality-and-security:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     env:
       JWT_SECRET: ${{ secrets.JWT_SECRET || 'IngenieroDocente_CI_Test_Secret_2026!' }}
@@ -20,30 +21,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - name: Clean stale install state
-        run: |
-          rm -rf node_modules
-          rm -f package-lock.json bun.lock
-          npm cache clean --force
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: npm install --no-fund --no-audit --legacy-peer-deps
+        run: bun install
 
       - name: TypeScript typecheck
-        run: npm run lint
+        run: bun run lint
 
       - name: Build application
-        run: npm run build
+        run: bun run build
 
       - name: Run unit tests (Vitest)
-        run: npm test
+        run: bun run test
 
-      - name: Run Mutation Testing (StrykerJS - fails if score < 50%)
-        run: npm run test:mutation
+      - name: Run Mutation Testing (StrykerJS)
+        run: bun run test:mutation
