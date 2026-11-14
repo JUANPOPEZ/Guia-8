@@ -4,7 +4,7 @@ import fs from 'fs';
 import http from 'http';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel, Schema } from '@google/genai';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -14,6 +14,7 @@ import {
   JwtUserPayload,
   getJwtSecret,
   authenticateCredentials,
+  authenticateDemoRole,
   generateJwtToken,
   extractBearerToken,
   verifyJwtToken,
@@ -24,9 +25,11 @@ import {
   validateChatRequestBody,
   cleanAndParseJson,
   sanitizeStructuredExplanation,
+  sanitizeText,
 } from './src/security/authAndValidation';
 
-// OWASP A02 (Cryptographic Failures): Carga centralizada de secretos (GEMINI_API_KEY, JWT_SECRET) desde .env en servidor, sin exponerlos al cliente.
+// OWASP A02:2023 – Cryptographic Failures:
+// Load secrets (GEMINI_API_KEY, JWT_SECRET) exclusively from server environment variables; never expose them to clients.
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,16 +39,26 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Trust reverse proxy headers (Cloud Run / Nginx) so express-rate-limit identifies client IPs safely
+// Trust reverse proxy headers (Cloud Run / Nginx) so express-rate-limit identifies client IPs accurately
 app.set('trust proxy', 1);
 
-// Extend Express Request with authenticated user context
 interface AuthenticatedRequest extends Request {
   user?: JwtUserPayload;
 }
 
-// In-memory security telemetry for OWASP A09 & GET /api/admin/metrics
+interface AuditLogRecord {
+  timestamp: string;
+  method: string;
+  path: string;
+  role: string;
+  statusCode: number;
+  durationMs: number;
+}
+
+// OWASP A09:2023 – Security Logging and Monitoring Failures:
+// In-memory security telemetry using Map to prevent Prototype Pollution (CodeQL safe).
 const serverStartTime = Date.now();
+const endpointHitsMap = new Map<string, number>();
 const metricsState = {
   totalRequests: 0,
   requestsByRole: {
@@ -60,33 +73,28 @@ const metricsState = {
     loginSuccess: 0,
     loginFailure: 0,
   },
-  endpointHits: {} as Record<string, number>,
-  recentAuditLogs: [] as Array<{
-    timestamp: string;
-    method: string;
-    path: string;
-    role: string;
-    statusCode: number;
-    durationMs: number;
-  }>,
+  recentAuditLogs: [] as AuditLogRecord[],
 };
 
-function recordAuditEntry(entry: {
-  timestamp: string;
-  method: string;
-  path: string;
-  role: string;
-  statusCode: number;
-  durationMs: number;
-}) {
+function recordAuditEntry(entry: AuditLogRecord): void {
   metricsState.recentAuditLogs.unshift(entry);
   if (metricsState.recentAuditLogs.length > 25) {
     metricsState.recentAuditLogs.pop();
   }
 }
 
-// OWASP A05 (Security Misconfiguration): Cabeceras HTTP seguras con helmet() y deshabilitación de X-Powered-By.
-// Nota: Se ajusta CSP/xFrameOptions para permitir la ejecución de React/Vite dentro de entornos de previsualización en iframe.
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  return 'Unknown internal error';
+}
+
+// OWASP A05:2023 – Security Misconfiguration:
+// Enforce hardened HTTP security headers via helmet() (CSP/xFrameOptions tuned for Vite/iframe preview compatibility).
 app.use(
   helmet({
     contentSecurityPolicy: false,
@@ -95,28 +103,30 @@ app.use(
   })
 );
 
-// OWASP A05 (Security Misconfiguration): Configuración restrictiva de CORS mediante lista blanca de orígenes permitidos.
+// OWASP A05:2023 – Security Misconfiguration:
+// Restrictive CORS policy using an explicit origin allowlist.
 const allowedOrigins = new Set<string>([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   ...(process.env.APP_URL ? [process.env.APP_URL.replace(/\/$/, '')] : []),
   ...(process.env.ALLOWED_ORIGIN
-    ? process.env.ALLOWED_ORIGIN.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean)
+    ? process.env.ALLOWED_ORIGIN.split(',')
+        .map((o) => o.trim().replace(/\/$/, ''))
+        .filter(Boolean)
     : []),
 ]);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow same-origin / server-side calls without Origin header, or explicitly whitelisted origins
-      if (!origin) {
+      if (!origin || allowedOrigins.has('*')) {
         return callback(null, true);
       }
       const normalizedOrigin = origin.replace(/\/$/, '');
       if (allowedOrigins.has(normalizedOrigin)) {
         return callback(null, true);
       }
-      return callback(new Error('Origen no permitido por la política CORS.'));
+      return callback(new Error('Origin not allowed by CORS policy.'));
     },
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -125,13 +135,15 @@ app.use(
   })
 );
 
-// Limit JSON payload size to mitigate DoS / oversized body injection
+// Limit JSON payload size to mitigate DoS and oversized body injection
 app.use(express.json({ limit: '1mb' }));
 
-// OWASP A09 (Security Logging and Monitoring Failures): Middleware de auditoría que registra método, ruta, rol autenticado, código HTTP y timestamp sin exponer tokens ni contraseñas.
-app.use('/api', (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+// OWASP A09:2023 – Security Logging and Monitoring Failures:
+// Structured security audit middleware logging method, sanitized path, authenticated role, status code, and timestamp.
+// Never logs Authorization headers, JWT tokens, or passwords.
+function securityAuditMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   const startMs = Date.now();
-  const requestPath = req.originalUrl.split('?')[0];
+  const safePath = sanitizeText(req.originalUrl.split('?')[0], 200).replace(/[\r\n]/g, '');
 
   res.on('finish', () => {
     const durationMs = Date.now() - startMs;
@@ -139,20 +151,24 @@ app.use('/api', (req: AuthenticatedRequest, res: Response, next: NextFunction) =
     const timestamp = new Date().toISOString();
 
     metricsState.totalRequests += 1;
-    if (role === 'ADMIN') metricsState.requestsByRole.ADMIN += 1;
-    else if (role === 'USER') metricsState.requestsByRole.USER += 1;
-    else metricsState.requestsByRole.ANONYMOUS += 1;
+    if (role === 'ADMIN') {
+      metricsState.requestsByRole.ADMIN += 1;
+    } else if (role === 'USER') {
+      metricsState.requestsByRole.USER += 1;
+    } else {
+      metricsState.requestsByRole.ANONYMOUS += 1;
+    }
 
-    metricsState.endpointHits[requestPath] = (metricsState.endpointHits[requestPath] || 0) + 1;
+    endpointHitsMap.set(safePath, (endpointHitsMap.get(safePath) ?? 0) + 1);
 
     if (res.statusCode === 401) metricsState.securityEvents.unauthorized401 += 1;
     if (res.statusCode === 403) metricsState.securityEvents.forbidden403 += 1;
     if (res.statusCode === 429) metricsState.securityEvents.rateLimited429 += 1;
 
-    const auditEntry = {
+    const auditEntry: AuditLogRecord = {
       timestamp,
       method: req.method,
-      path: requestPath,
+      path: safePath,
       role,
       statusCode: res.statusCode,
       durationMs,
@@ -160,84 +176,98 @@ app.use('/api', (req: AuthenticatedRequest, res: Response, next: NextFunction) =
 
     recordAuditEntry(auditEntry);
     console.info(
-      `[SECURITY AUDIT] ${timestamp} | ${req.method} ${requestPath} | role=${role} | status=${res.statusCode} | ${durationMs}ms`
+      `[SECURITY AUDIT] ${timestamp} | ${req.method} ${safePath} | role=${role} | status=${res.statusCode} | ${durationMs}ms`
     );
   });
 
   next();
-});
+}
 
-// OWASP A07 (Identification and Authentication Failures): Rate-limiting específico en /api/auth/login para prevenir ataques de fuerza bruta.
+app.use('/api', securityAuditMiddleware);
+
+// OWASP A07:2023 – Identification and Authentication Failures:
+// Dedicated brute-force rate limiter for /api/auth/login.
 const loginRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 20, // máximo 20 intentos por ventana por IP
+  windowMs: 15 * 60 * 1000,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
-    error: 'Demasiados intentos de inicio de sesión. Intenta nuevamente en 15 minutos.',
+    error: 'Too many authentication attempts. Please try again in 15 minutes.',
   },
 });
 
-// General API rate limiter to prevent abuse
 const apiRateLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
+  windowMs: 60 * 1000,
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
-    error: 'Límite de solicitudes excedido. Espera un momento antes de reintentar.',
+    error: 'API rate limit exceeded. Please wait before retrying.',
   },
+});
+
+const spaRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 app.use('/api', apiRateLimiter);
 
-// OWASP A01 (Broken Access Control) & A07 (Identification and Authentication Failures):
-// Middleware de autenticación JWT que valida firma, expiración y estructura del token Bearer.
-function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+// OWASP A01:2023 – Broken Access Control & A07:2023 – Identification and Authentication Failures:
+// Authenticate incoming Bearer JWT and attach verified user claims to request context.
+function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   const token = extractBearerToken(req.headers.authorization);
   if (!token) {
-    return res.status(401).json({
+    res.status(401).json({
       success: false,
-      error: 'No autenticado. Se requiere header Authorization: Bearer <token>.',
+      error: 'Authentication required. Missing Authorization: Bearer <token> header.',
     });
+    return;
   }
 
   const verification = verifyJwtToken(token, getJwtSecret());
   if (!verification.valid) {
-    return res.status(401).json({
+    res.status(401).json({
       success: false,
       error: verification.error,
     });
+    return;
   }
 
   req.user = verification.payload;
-  return next();
+  next();
 }
 
-// OWASP A01 (Broken Access Control): Middleware RBAC estricto para restringir rutas según roles autorizados.
+// OWASP A01:2023 – Broken Access Control:
+// Enforce strict Role-Based Access Control (RBAC) for protected endpoints.
 function authorizeRole(roles: readonly UserRole[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
-        error: 'Sesión no autenticada.',
+        error: 'Unauthenticated session.',
       });
+      return;
     }
 
     if (!hasRequiredRole(req.user.role, roles)) {
-      return res.status(403).json({
+      res.status(403).json({
         success: false,
-        error: `Acceso denegado (403 Forbidden). Rol '${req.user.role}' no autorizado; se requiere: ${roles.join(' o ')}.`,
+        error: `Access denied (403 Forbidden). Role '${req.user.role}' is not authorized; required: ${roles.join(' or ')}.`,
       });
+      return;
     }
 
-    return next();
+    next();
   };
 }
 
-// OWASP A02 (Cryptographic Failures): Uso exclusivo de GEMINI_API_KEY en el servidor.
+// OWASP A02:2023 – Cryptographic Failures: Server-only Gemini API client initialization.
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
@@ -261,7 +291,92 @@ REGLAS OBLIGATORIAS:
 5. Reconocimiento de información insuficiente: Si la pregunta del estudiante es vaga, carece de código, versiones o contexto esencial para dar una respuesta certera, señálalo expresamente e indica qué datos o parámetros se requieren.
 6. Cero invención: Nunca inventes fuentes bibliográficas, citas académicas imaginarias, estadísticas sin sustento ni URLs falsas. Si mencionas obras canónicas (como el catálogo GoF de 1994, Clean Code de Robert C. Martin o el paper de Edgar F. Codd sobre el modelo relacional), hazlo con rigor verídico.`;
 
-// OWASP A04 (Insecure Design): Lógica de resiliencia con Exponential Backoff para mitigar picos 503/429 sin saturar el upstream.
+const STRUCTURED_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    topic: { type: Type.STRING, description: 'Main concept analyzed' },
+    isInsufficientInfo: { type: Type.BOOLEAN, description: 'True if context is missing' },
+    insufficientInfoNotice: { type: Type.STRING, description: 'Notice detailing missing parameters' },
+    definition: { type: Type.STRING, description: 'Rigorous formal definition' },
+    explanation: { type: Type.STRING, description: 'Technical explanation and tradeoffs' },
+    steps: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Sequential steps' },
+    example: {
+      type: Type.OBJECT,
+      properties: {
+        language: { type: Type.STRING },
+        code: { type: Type.STRING },
+        explanation: { type: Type.STRING },
+      },
+      required: ['language', 'code', 'explanation'],
+    },
+    practicalRecommendation: { type: Type.STRING },
+    verificationWarning: { type: Type.STRING },
+    relatedConcepts: { type: Type.ARRAY, items: { type: Type.STRING } },
+    verifiedReferences: { type: Type.ARRAY, items: { type: Type.STRING } },
+  },
+  required: [
+    'topic',
+    'isInsufficientInfo',
+    'insufficientInfoNotice',
+    'definition',
+    'explanation',
+    'example',
+    'practicalRecommendation',
+    'verificationWarning',
+  ],
+};
+
+const CHALLENGE_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    title: { type: Type.STRING },
+    scenario: { type: Type.STRING },
+    codeSnippet: { type: Type.STRING },
+    language: { type: Type.STRING },
+    question: { type: Type.STRING },
+    options: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          text: { type: Type.STRING },
+          explanation: { type: Type.STRING },
+        },
+        required: ['id', 'text', 'explanation'],
+      },
+    },
+    correctOptionId: { type: Type.STRING },
+    academicFeedback: { type: Type.STRING },
+    verificationWarning: { type: Type.STRING },
+  },
+  required: [
+    'title',
+    'scenario',
+    'question',
+    'options',
+    'correctOptionId',
+    'academicFeedback',
+    'verificationWarning',
+  ],
+};
+
+function isTransientGeminiError(err: unknown): boolean {
+  const errObj = err && typeof err === 'object' ? (err as { status?: number }) : {};
+  const errMsg = getErrorMessage(err);
+  return (
+    errObj.status === 503 ||
+    errObj.status === 429 ||
+    errMsg.includes('503') ||
+    errMsg.includes('429') ||
+    errMsg.includes('high demand') ||
+    errMsg.includes('UNAVAILABLE') ||
+    errMsg.includes('RESOURCE_EXHAUSTED')
+  );
+}
+
+// OWASP A04:2023 – Insecure Design:
+// Exponential backoff retry wrapper to handle transient upstream saturation without cascading failures.
 async function callGeminiWithRetry<T>(
   apiCall: () => Promise<T>,
   maxRetries = 3,
@@ -273,20 +388,12 @@ async function callGeminiWithRetry<T>(
   while (true) {
     try {
       return await apiCall();
-    } catch (err: any) {
-      attempt++;
-      const errMsg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
-      const isTransient =
-        err?.status === 503 ||
-        err?.status === 429 ||
-        errMsg.includes('503') ||
-        errMsg.includes('429') ||
-        errMsg.includes('high demand') ||
-        errMsg.includes('UNAVAILABLE') ||
-        errMsg.includes('RESOURCE_EXHAUSTED');
-
-      if (attempt <= maxRetries && isTransient) {
-        console.warn(`[Gemini Retry] Intento ${attempt}/${maxRetries} debido a saturación temporal (503/429). Reintentando en ${delay}ms...`);
+    } catch (err: unknown) {
+      attempt += 1;
+      if (attempt <= maxRetries && isTransientGeminiError(err)) {
+        console.warn(
+          `[Gemini Retry] Attempt ${attempt}/${maxRetries} after transient error. Retrying in ${delay}ms...`
+        );
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay *= 2;
       } else {
@@ -296,10 +403,31 @@ async function callGeminiWithRetry<T>(
   }
 }
 
-// Multi-model fallback runner to ensure availability during regional demand spikes
-async function generateContentWithFallback(prompt: string, config: any) {
+function buildPedagogicalConfig(responseSchema?: Schema, extraInstruction?: string) {
+  return {
+    systemInstruction: extraInstruction
+      ? `${SYSTEM_INSTRUCTION}\n${extraInstruction}`
+      : SYSTEM_INSTRUCTION,
+    thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    ...(responseSchema
+      ? {
+          responseMimeType: 'application/json',
+          responseSchema,
+        }
+      : {}),
+  };
+}
+
+function buildStudentContextHeader(studentLevel: string, preferredLanguage: string): string {
+  return `Contexto del estudiante:\n- Nivel académico: ${studentLevel}\n- Lenguaje para código: ${preferredLanguage}`;
+}
+
+async function generateContentWithFallback(
+  contents: string | Array<{ role: string; parts: Array<{ text: string }> }>,
+  config: ReturnType<typeof buildPedagogicalConfig>
+) {
   const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
-  let lastErr: any = null;
+  let lastErr: unknown = null;
 
   for (const model of models) {
     try {
@@ -307,29 +435,28 @@ async function generateContentWithFallback(prompt: string, config: any) {
         () =>
           ai.models.generateContent({
             model,
-            contents: prompt,
+            contents,
             config,
           }),
         2,
         800
       );
-    } catch (err: any) {
-      console.warn(`[Model Fallback] Modelo ${model} no disponible. Probando modelo alternativo...`);
+    } catch (err: unknown) {
+      console.warn(`[Model Fallback] Model ${model} unavailable; trying fallback model.`);
       lastErr = err;
     }
   }
   throw lastErr;
 }
 
-// OWASP A04 (Insecure Design): Helper para respuestas de error seguras sin filtrar stack traces internos en producción.
-function sendSafeServerError(res: Response, publicMessage: string, error: unknown) {
-  console.error(`[Server Error] ${publicMessage}`, error instanceof Error ? error.message : 'Unknown error');
+// OWASP A04:2023 – Insecure Design:
+// Safe error responder that omits stack traces and internal error details in production.
+function sendSafeServerError(res: Response, publicMessage: string, error: unknown): Response {
+  console.error(`[Server Error] ${publicMessage}:`, getErrorMessage(error));
   return res.status(500).json({
     success: false,
     error: publicMessage,
-    ...(isProduction
-      ? {}
-      : { details: error instanceof Error ? error.message : 'Error interno desconocido' }),
+    ...(isProduction ? {} : { details: getErrorMessage(error) }),
   });
 }
 
@@ -337,20 +464,23 @@ function sendSafeServerError(res: Response, publicMessage: string, error: unknow
 // PUBLIC ROUTE: POST /api/auth/login
 // ============================================================================
 app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
-  // OWASP A03 (Injection): Validación y sanitización estricta de credenciales en req.body
   const bodyCheck = validateLoginBody(req.body);
   if (!bodyCheck.valid) {
     metricsState.securityEvents.loginFailure += 1;
     return res.status(400).json({ success: false, error: bodyCheck.error });
   }
 
-  const authResult = authenticateCredentials(bodyCheck.username, bodyCheck.password);
+  const authResult =
+    bodyCheck.mode === 'quickRole'
+      ? authenticateDemoRole(bodyCheck.quickRole)
+      : authenticateCredentials(bodyCheck.username, bodyCheck.password);
+
   if (!authResult.valid) {
     metricsState.securityEvents.loginFailure += 1;
     return res.status(401).json({ success: false, error: authResult.error });
   }
 
-  // OWASP A02 & A07: Token JWT firmado con secreto en entorno y expiración estricta de 1h
+  // OWASP A02 & A07: Issue signed JWT with 1h expiration
   const token = generateJwtToken(authResult.user, getJwtSecret(), '1h');
   metricsState.securityEvents.loginSuccess += 1;
 
@@ -363,7 +493,7 @@ app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// PROTECTED ROUTES (USER & ADMIN): /api/assist/stream, /api/assist/structured, /api/assist/chat
+// PROTECTED ROUTES (USER & ADMIN): /api/assist/structured, /api/assist/chat, /api/assist/stream
 // ============================================================================
 
 app.post(
@@ -377,44 +507,18 @@ app.post(
     }
 
     const { query, studentLevel, preferredLanguage } = validation.data;
-
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const prompt = `Contexto del estudiante:
-- Nivel académico: ${studentLevel}
-- Lenguaje para código: ${preferredLanguage}
+    const prompt = `${buildStudentContextHeader(studentLevel, preferredLanguage)}
 
 Consulta del estudiante:
 "${query}"
 
-Instrucciones pedagógicas:
-1. Si la consulta no cuenta con suficiente información para brindar una respuesta técnica certera, indícalo expresamente al inicio bajo una sección de aviso, solicitando los parámetros faltantes.
-2. Organiza la respuesta obligatoriamente en las 4 secciones con títulos Markdown limpios:
+Organiza la respuesta obligatoriamente en las 4 secciones (Definición Conceptual, Explicación Técnica, Ejemplo Práctico en ${preferredLanguage}, Recomendación Práctica) más la Advertencia de Verificación Documental.`;
 
-## 📘 1. Definición Conceptual
-(Definición formal y concisa del concepto)
-
-## 🔍 2. Explicación Técnica & Funcionamiento
-(Explicación detallada, funcionamiento interno, justificación y pasos numerados si aplica)
-
-## 💻 3. Ejemplo Práctico (${preferredLanguage})
-\`\`\`${preferredLanguage}
-// Código fuente limpio, realista y comentado
-\`\`\`
-(Explicación técnica del ejemplo)
-
-## 💡 4. Recomendación Práctica para la Industria
-(Buenas prácticas para producción y trade-offs)
-
-## ⚠️ Advertencia de Verificación Documental
-(Documentación técnica oficial, especificaciones o RFCs canónicos que deben cotejarse según la versión)`;
-
-    const config = {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    };
+    const config = buildPedagogicalConfig();
 
     try {
       let stream;
@@ -425,7 +529,6 @@ Instrucciones pedagógicas:
           config,
         });
       } catch {
-        console.warn('Fallback streaming to gemini-3.1-flash-lite...');
         stream = await ai.models.generateContentStream({
           model: 'gemini-3.1-flash-lite',
           contents: prompt,
@@ -440,24 +543,22 @@ Instrucciones pedagógicas:
       }
       res.write('data: [DONE]\n\n');
       res.end();
-    } catch (err: any) {
-      console.error('Error in /api/assist/stream:', err?.message);
+    } catch (err: unknown) {
+      console.error('Error in /api/assist/stream:', getErrorMessage(err));
       res.write(
-        `data: ${JSON.stringify({ error: isProduction ? 'Error en streaming' : err?.message || 'Error en streaming' })}\n\n`
+        `data: ${JSON.stringify({ error: isProduction ? 'Streaming error occurred.' : getErrorMessage(err) })}\n\n`
       );
       res.end();
     }
   }
 );
 
-// Endpoint for structured pedagogical explanation (forces JSON matching the 4 required pillars)
 app.post(
   '/api/assist/structured',
   authenticateJWT,
   authorizeRole(['USER', 'ADMIN']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      // OWASP A03 (Injection): Sanitización y validación de tipos y longitudes en req.body
       const validation = validateStructuredRequestBody(req.body);
       if (!validation.valid) {
         return res.status(400).json({ success: false, error: validation.error });
@@ -465,162 +566,72 @@ app.post(
 
       const { query, studentLevel, preferredLanguage, conversationContext } = validation.data;
 
-      const prompt = `Contexto del estudiante:
-- Nivel académico: ${studentLevel}
-- Lenguaje de programación preferido para ejemplos: ${preferredLanguage}
+      const prompt = `${buildStudentContextHeader(studentLevel, preferredLanguage)}
 
 Consulta del estudiante:
 "${query}"
 
 ${conversationContext.length > 0 ? `Contexto previo:\n${JSON.stringify(conversationContext.slice(-3))}\n` : ''}
-
 Por favor, analiza la consulta y genera la respuesta académica estructurada.
-- Mantén un tono académico riguroso pero directo, didáctico y sin redundancias innecesarias.
-- Si la consulta no cuenta con suficiente información para brindar una respuesta técnica responsable (por ejemplo: "mi código no anda", "cuál es el mejor lenguaje sin contexto de uso", etc.), marca isInsufficientInfo como true y completa insufficientInfoNotice explicando amablemente qué detalles específicos faltan.
-- En el campo 'example', genera SIEMPRE un ejemplo de código real, limpio y bien comentado en ${preferredLanguage} (de 15 a 35 líneas, enfocado en ilustrar el concepto o la refactorización).`;
+- Si la consulta carece de contexto suficiente, marca isInsufficientInfo como true y explica qué parámetros faltan.
+- En el campo 'example', genera un ejemplo de código limpio y comentado en ${preferredLanguage}.`;
 
-      // OWASP A03 (Injection): Esquema JSON estricto (responseSchema) para prevenir salidas malformadas del modelo
-      const config = {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            topic: {
-              type: Type.STRING,
-              description:
-                'El tema o concepto principal analizado (ej: Principio de Responsabilidad Única, Patrón Factory, etc.)',
-            },
-            isInsufficientInfo: {
-              type: Type.BOOLEAN,
-              description: 'Verdadero si la consulta carece de detalles esenciales para responder responsablemente',
-            },
-            insufficientInfoNotice: {
-              type: Type.STRING,
-              description:
-                'Mensaje académico indicando expresamente qué datos o contexto faltan para responder con precisión',
-            },
-            definition: {
-              type: Type.STRING,
-              description: 'Definición rigurosa y formal del concepto',
-            },
-            explanation: {
-              type: Type.STRING,
-              description: 'Explicación detallada del fundamento técnico, objetivos y consideraciones de ingeniería',
-            },
-            steps: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: 'Pasos ordenados secuencialmente para aplicar el concepto o flujo de ejecución, si aplica',
-            },
-            example: {
-              type: Type.OBJECT,
-              properties: {
-                language: { type: Type.STRING, description: 'Lenguaje de programación del ejemplo' },
-                code: { type: Type.STRING, description: 'Código fuente limpio y didáctico con comentarios' },
-                explanation: { type: Type.STRING, description: 'Explicación técnica del ejemplo de código' },
-              },
-              required: ['language', 'code', 'explanation'],
-            },
-            practicalRecommendation: {
-              type: Type.STRING,
-              description: 'Recomendación práctica y buenas prácticas de ingeniería para la industria',
-            },
-            verificationWarning: {
-              type: Type.STRING,
-              description:
-                'Advertencia explícita sobre qué documentación oficial debe consultarse y qué aspectos dependen de la versión',
-            },
-            relatedConcepts: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: 'Lista de 3 a 5 conceptos afines que el estudiante debería investigar a continuación',
-            },
-            verifiedReferences: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description:
-                'Referencias canónicas o especificaciones oficiales reales (únicamente libros canónicos o estándares oficiales reales, sin inventar)',
-            },
-          },
-          required: [
-            'topic',
-            'isInsufficientInfo',
-            'insufficientInfoNotice',
-            'definition',
-            'explanation',
-            'example',
-            'practicalRecommendation',
-            'verificationWarning',
-          ],
-        },
-      };
+      const response = await generateContentWithFallback(
+        prompt,
+        buildPedagogicalConfig(STRUCTURED_RESPONSE_SCHEMA)
+      );
 
-      const response = await generateContentWithFallback(prompt, config);
-      const text = response.text;
-      if (!text) {
-        throw new Error('No se recibió contenido de respuesta del modelo.');
+      if (!response.text) {
+        throw new Error('Empty response payload received from AI model.');
       }
 
-      const parsedData = cleanAndParseJson<Record<string, any>>(text);
+      const parsedData = cleanAndParseJson<Record<string, unknown>>(response.text);
       const sanitizedData = sanitizeStructuredExplanation(parsedData, preferredLanguage);
-
       return res.json({ success: true, data: sanitizedData });
     } catch (error: unknown) {
       return sendSafeServerError(
         res,
-        'Ocurrió un error al procesar la explicación académica con Gemini API.',
+        'Failed to process structured pedagogical explanation.',
         error
       );
     }
   }
 );
 
-// Endpoint for conversational follow-ups (USER & ADMIN)
 app.post(
   '/api/assist/chat',
   authenticateJWT,
   authorizeRole(['USER', 'ADMIN']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      // OWASP A03 (Injection): Validación y sanitización del arreglo de mensajes
       const validation = validateChatRequestBody(req.body);
       if (!validation.valid) {
         return res.status(400).json({ success: false, error: validation.error });
       }
 
       const { messages, studentLevel, preferredLanguage } = validation.data;
-
       const formattedContents = messages.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
       }));
 
-      const response = await callGeminiWithRetry(async () => {
-        return await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: formattedContents,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction: `${SYSTEM_INSTRUCTION}
-Configuración actual:
-- Nivel de estudiante: ${studentLevel}
-- Lenguaje para código: ${preferredLanguage}
-Siempre mantén el formato claro: Definición (si aplica), Explicación técnica, Ejemplo práctico y Recomendación práctica con advertencia de verificación. Si faltan datos o contexto, decláralo abiertamente.`,
-          },
-        });
-      });
+      const extraConfig = `${buildStudentContextHeader(studentLevel, preferredLanguage)}
+Siempre mantén el formato claro: Definición, Explicación técnica, Ejemplo práctico y Recomendación práctica con advertencia de verificación.`;
+
+      const response = await generateContentWithFallback(
+        formattedContents,
+        buildPedagogicalConfig(undefined, extraConfig)
+      );
 
       return res.json({ success: true, reply: response.text || '' });
     } catch (error: unknown) {
-      return sendSafeServerError(res, 'Error en la conversación académica con Gemini.', error);
+      return sendSafeServerError(res, 'Failed to process conversational follow-up.', error);
     }
   }
 );
 
 // ============================================================================
-// ADMIN-ONLY ROUTES: POST /api/assist/challenge, GET /api/admin/metrics
+// ADMIN-ONLY ROUTES: POST /api/assist/challenge, GET /api/admin/security-audit
 // ============================================================================
 
 app.post(
@@ -635,99 +646,68 @@ app.post(
       }
 
       const { topic, studentLevel } = validation.data;
-
       const prompt = `Genera un desafío práctico o caso de estudio académico para un estudiante de ingeniería de software sobre el tema: "${topic}".
 Nivel: ${studentLevel}.
+Incluye escenario realista, pregunta detonante, 3-4 opciones técnicas y retroalimentación académica.`;
 
-El desafío debe presentar:
-1. Un escenario realista de software (ej. un problema de arquitectura, un fragmento de código que viola un principio SOLID, o un dilema de concurrencia).
-2. La pregunta detonante para que el estudiante reflexione.
-3. Tres o cuatro opciones de solución técnica con justificación.
-4. La opción correcta con explicación detallada y recomendación práctica.`;
+      const response = await generateContentWithFallback(
+        prompt,
+        buildPedagogicalConfig(CHALLENGE_RESPONSE_SCHEMA)
+      );
 
-      const config = {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            scenario: { type: Type.STRING },
-            codeSnippet: { type: Type.STRING },
-            language: { type: Type.STRING },
-            question: { type: Type.STRING },
-            options: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  text: { type: Type.STRING },
-                  explanation: { type: Type.STRING },
-                },
-                required: ['id', 'text', 'explanation'],
-              },
-            },
-            correctOptionId: { type: Type.STRING },
-            academicFeedback: { type: Type.STRING },
-            verificationWarning: { type: Type.STRING },
-          },
-          required: [
-            'title',
-            'scenario',
-            'question',
-            'options',
-            'correctOptionId',
-            'academicFeedback',
-            'verificationWarning',
-          ],
-        },
-      };
+      if (!response.text) {
+        throw new Error('Empty response payload received from AI model.');
+      }
 
-      const response = await generateContentWithFallback(prompt, config);
-      const text = response.text;
-      if (!text) throw new Error('Respuesta vacía del modelo.');
-
-      return res.json({ success: true, data: cleanAndParseJson(text) });
+      return res.json({ success: true, data: cleanAndParseJson(response.text) });
     } catch (error: unknown) {
-      return sendSafeServerError(res, 'Error al generar el desafío técnico.', error);
+      return sendSafeServerError(res, 'Failed to generate technical challenge.', error);
     }
   }
+);
+
+function handleAdminSecurityAudit(_req: AuthenticatedRequest, res: Response): Response {
+  return res.json({
+    success: true,
+    data: {
+      uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
+      totalRequests: metricsState.totalRequests,
+      requestsByRole: { ...metricsState.requestsByRole },
+      securityEvents: { ...metricsState.securityEvents },
+      endpointHits: Object.fromEntries(endpointHitsMap.entries()),
+      recentAuditLogs: [...metricsState.recentAuditLogs],
+    },
+  });
+}
+
+app.get(
+  '/api/admin/security-audit',
+  authenticateJWT,
+  authorizeRole(['ADMIN']),
+  handleAdminSecurityAudit
 );
 
 app.get(
   '/api/admin/metrics',
   authenticateJWT,
   authorizeRole(['ADMIN']),
-  (_req: AuthenticatedRequest, res: Response) => {
-    return res.json({
-      success: true,
-      data: {
-        uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
-        totalRequests: metricsState.totalRequests,
-        requestsByRole: { ...metricsState.requestsByRole },
-        securityEvents: { ...metricsState.securityEvents },
-        endpointHits: { ...metricsState.endpointHits },
-        recentAuditLogs: [...metricsState.recentAuditLogs],
-      },
-    });
-  }
+  handleAdminSecurityAudit
 );
 
-// Global error handler (OWASP A04: evita filtrar stack traces en respuestas HTTP, incluyendo errores de CORS/JSON)
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  if (err?.message?.includes('CORS')) {
-    return res.status(403).json({ success: false, error: err.message });
+// Global error handler (OWASP A04:2023 – Insecure Design: never expose internal stack traces)
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const errMsg = getErrorMessage(err);
+  if (errMsg.includes('CORS')) {
+    return res.status(403).json({ success: false, error: errMsg });
   }
-  if (err?.type === 'entity.parse.failed') {
-    return res.status(400).json({ success: false, error: 'JSON malformado en el cuerpo de la petición.' });
+  const errObj = err && typeof err === 'object' ? (err as { type?: string }) : {};
+  if (errObj.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, error: 'Malformed JSON request body.' });
   }
-  return sendSafeServerError(res, 'Error interno del servidor.', err);
+  return sendSafeServerError(res, 'Internal server error.', err);
 });
 
-// Setup Vite middleware in dev or static files in production
-async function startServer() {
+async function startServer(): Promise<void> {
   const httpServer = http.createServer(app);
 
   if (!isProduction) {
@@ -741,10 +721,9 @@ async function startServer() {
 
     app.use(vite.middlewares);
 
-    // Fallback for SPA routing in development
-    app.use('*', async (req, res) => {
+    app.use('*', spaRateLimiter, async (req, res) => {
       if (req.originalUrl.startsWith('/api')) {
-        return res.status(404).json({ error: 'Ruta API no encontrada' });
+        return res.status(404).json({ success: false, error: 'API route not found.' });
       }
       try {
         const indexPath = path.resolve(process.cwd(), 'index.html');
@@ -752,25 +731,24 @@ async function startServer() {
           const rawHtml = fs.readFileSync(indexPath, 'utf-8');
           const transformedHtml = await vite.transformIndexHtml(req.originalUrl, rawHtml);
           return res.status(200).set({ 'Content-Type': 'text/html' }).send(transformedHtml);
-        } else {
-          return res.status(404).send(`Not Found: No se encontró index.html en ${indexPath}`);
         }
-      } catch (err: any) {
-        console.error('Error en enrutamiento:', err?.message);
-        return res.status(500).send('Error interno del servidor');
+        return res.status(404).send('Index HTML file not found.');
+      } catch (err: unknown) {
+        console.error('Routing error:', getErrorMessage(err));
+        return res.status(500).send('Internal server error.');
       }
     });
   } else {
     const clientPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(clientPath));
-    app.get('*', (_req, res) => {
+    app.get('*', spaRateLimiter, (_req, res) => {
       res.sendFile(path.resolve(clientPath, 'index.html'));
     });
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`IngenieroDocente Server running on http://0.0.0.0:${PORT}`);
+    console.info(`IngenieroDocente Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+void startServer();

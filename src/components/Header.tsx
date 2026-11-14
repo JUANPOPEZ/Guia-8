@@ -107,9 +107,10 @@ export const Header: React.FC<HeaderProps> = ({
           {authSession ? (
             <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 text-xs">
               <button
+                type="button"
                 onClick={onOpenAuth}
                 className="flex items-center gap-1.5 font-semibold text-emerald-800 dark:text-emerald-200 hover:underline cursor-pointer"
-                title="Cambiar rol o gestionar sesión JWT"
+                title="Switch role or manage JWT session"
               >
                 <KeyRound className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span>{authSession.user.username}</span>
@@ -118,33 +119,36 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               </button>
               <button
+                type="button"
                 onClick={onLogout}
                 className="p-0.5 text-emerald-700 dark:text-emerald-300 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                title="Cerrar sesión JWT"
-                aria-label="Cerrar sesión JWT"
+                title="Sign out"
+                aria-label="Sign out"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : (
             <button
+              type="button"
               onClick={onOpenAuth}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 rounded-lg text-xs font-semibold border border-amber-300 dark:border-amber-800 transition-colors cursor-pointer"
-              title="Iniciar sesión para obtener token JWT"
+              title="Sign in to obtain a JWT token"
             >
               <KeyRound className="w-3.5 h-3.5" />
-              <span>Iniciar Sesión (JWT)</span>
+              <span>Sign In (JWT)</span>
             </button>
           )}
 
-          {/* Admin Metrics Button */}
+          {/* Admin Security Audit Button */}
           <button
+            type="button"
             onClick={onOpenAdminMetrics}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 hover:bg-violet-100 dark:bg-violet-950/60 dark:hover:bg-violet-900/60 text-violet-700 dark:text-violet-300 rounded-lg text-xs font-semibold border border-violet-200 dark:border-violet-800 transition-colors cursor-pointer"
-            title="Ver métricas y auditoría de seguridad (Solo ADMIN)"
+            title="View security audit and metrics (ADMIN only)"
           >
             <Activity className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Auditoría Admin</span>
+            <span className="hidden sm:inline">Security Audit</span>
           </button>
 
           {/* Rules & Charter Modal Button */}

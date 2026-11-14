@@ -64,13 +64,17 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({
         }),
       });
 
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Error al generar el caso de estudio.');
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: AcademicChallenge;
+        error?: string;
+      };
+      if (!res.ok || !json.success || !json.data) {
+        throw new Error(json.error || 'Error generating case study challenge.');
       }
       setChallenge(json.data);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Error de conexión con el asistente.');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Connection error.');
     } finally {
       setLoading(false);
     }
@@ -111,7 +115,10 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({
               className="flex-1 px-4 py-2 bg-slate-50 dark:bg-slate-800 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:outline-hidden focus:border-indigo-500"
             />
             <button
-              onClick={() => handleGenerateChallenge()}
+              type="button"
+              onClick={() => {
+                void handleGenerateChallenge();
+              }}
               disabled={loading}
               className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2"
             >
@@ -138,10 +145,11 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({
           <div className="flex flex-wrap gap-1.5">
             {predefinedTopics.map((pt, idx) => (
               <button
+                type="button"
                 key={idx}
                 onClick={() => {
                   setTopic(pt);
-                  handleGenerateChallenge(pt);
+                  void handleGenerateChallenge(pt);
                 }}
                 className="px-2.5 py-1 text-xs rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200 dark:border-slate-700/80 transition-colors"
               >
@@ -161,10 +169,11 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({
           </div>
           {userRole !== 'ADMIN' && (
             <button
+              type="button"
               onClick={onOpenAuth}
               className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors cursor-pointer"
             >
-              Cambiar a Rol ADMIN
+              Switch to ADMIN Role
             </button>
           )}
         </div>

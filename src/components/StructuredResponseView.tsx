@@ -125,7 +125,10 @@ ${data.verificationWarning}
           )}
 
           <button
-            onClick={handleCopyFullSummary}
+            type="button"
+            onClick={() => {
+              void handleCopyFullSummary();
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
             title="Copiar toda la ficha estructurada"
           >
@@ -213,7 +216,10 @@ ${data.verificationWarning}
                   {data.example.language}
                 </span>
                 <button
-                  onClick={handleCopyCode}
+                  type="button"
+                  onClick={() => {
+                    void handleCopyCode();
+                  }}
                   className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium transition-colors"
                 >
                   {copiedCode ? (

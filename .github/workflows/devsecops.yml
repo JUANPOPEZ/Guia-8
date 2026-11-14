@@ -2,39 +2,39 @@ name: DevSecOps CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+env:
+  JWT_SECRET: ci-devsecops-jwt-secret-key-2026-secure
+  GEMINI_API_KEY: ci-placeholder-gemini-api-key
+  ALLOWED_ORIGIN: '*'
 
 jobs:
   devsecops-quality-and-security:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    env:
-      JWT_SECRET: ${{ secrets.JWT_SECRET || 'IngenieroDocente_CI_Test_Secret_2026!' }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'test-api-key-for-ci' }}
-      ALLOWED_ORIGIN: '*'
-      CI: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install dependencies
-        run: bun install
+        run: npm install --legacy-peer-deps
 
       - name: TypeScript typecheck
-        run: bun run lint
+        run: npm run lint
 
       - name: Build application
-        run: bun run build
+        run: npm run build
 
       - name: Run unit tests (Vitest)
-        run: bun run test
+        run: npm test
 
-      - name: Run Mutation Testing (StrykerJS)
-        run: bun run test:mutation
+      - name: Run Mutation Testing (StrykerJS - fails if score < 50%)
+        run: npm run test:mutation

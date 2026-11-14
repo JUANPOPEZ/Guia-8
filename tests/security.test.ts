@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 import {
   ALLOWED_LANGUAGES,
@@ -8,6 +8,7 @@ import {
   MAX_QUERY_LENGTH,
   MAX_TOPIC_LENGTH,
   authenticateCredentials,
+  authenticateDemoRole,
   cleanAndParseJson,
   extractBearerToken,
   generateJwtToken,
@@ -15,33 +16,51 @@ import {
   hasRequiredRole,
   sanitizeStructuredExplanation,
   sanitizeText,
+  sha256Hex,
   validateChallengeRequestBody,
   validateChatRequestBody,
   validateLoginBody,
   validateStructuredRequestBody,
   verifyJwtToken,
+  verifyPassphraseDigest,
 } from '../src/security/authAndValidation';
 
 describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   const TEST_SECRET = 'super-secret-jwt-key-for-unit-tests-2026';
+
+  afterEach(() => {
+    delete process.env.DEMO_ADMIN_PASSPHRASE;
+    delete process.env.DEMO_USER_PASSPHRASE;
+  });
 
   describe('getJwtSecret', () => {
     it('returns trimmed environment secret when length >= 16', () => {
       expect(getJwtSecret('  1234567890123456  ')).toBe('1234567890123456');
     });
 
-    it('falls back to default secret when undefined, empty, or too short', () => {
-      const fallback = getJwtSecret(undefined);
-      expect(fallback.length).toBeGreaterThanOrEqual(16);
-      expect(getJwtSecret('')).toBe(fallback);
-      expect(getJwtSecret('short-secret')).toBe(fallback);
+    it('generates and caches a runtime cryptographic fallback when undefined, empty, or too short', () => {
+      const fallback1 = getJwtSecret(undefined);
+      const fallback2 = getJwtSecret('');
+      const fallback3 = getJwtSecret('short-secret');
+      expect(fallback1.length).toBeGreaterThanOrEqual(32);
+      expect(fallback2).toBe(fallback1);
+      expect(fallback3).toBe(fallback1);
+    });
+  });
+
+  describe('verifyPassphraseDigest', () => {
+    it('returns true for matching digest and false for mismatched or malformed digest', () => {
+      const expected = sha256Hex('valid-pass');
+      expect(verifyPassphraseDigest('valid-pass', expected)).toBe(true);
+      expect(verifyPassphraseDigest('wrong-pass', expected)).toBe(false);
+      expect(verifyPassphraseDigest('valid-pass', 'abcd')).toBe(false);
     });
   });
 
   describe('sanitizeText', () => {
     it('trims whitespace and removes dangerous ASCII control characters while keeping newlines/tabs', () => {
-      const raw = '  Hola\x00Mundo\x07!\nSegunda\tlínea\x1F  ';
-      expect(sanitizeText(raw)).toBe('HolaMundo!\nSegunda\tlínea');
+      const raw = '  Hello\x00World\x07!\nSecond\tline\x1F\x7F  ';
+      expect(sanitizeText(raw)).toBe('HelloWorld!\nSecond\tline');
     });
 
     it('returns empty string for non-string values', () => {
@@ -58,9 +77,10 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
     });
   });
 
-  describe('authenticateCredentials', () => {
-    it('authenticates valid ADMIN credentials (case-insensitive username with trim)', () => {
-      const res = authenticateCredentials('  ADMIN ', 'AdminPassword2026!');
+  describe('authenticateCredentials & authenticateDemoRole', () => {
+    it('authenticates valid ADMIN credentials via env override or default digest', () => {
+      process.env.DEMO_ADMIN_PASSPHRASE = 'ci-admin-test-passphrase';
+      const res = authenticateCredentials('  ADMIN ', 'ci-admin-test-passphrase');
       expect(res.valid).toBe(true);
       if (res.valid) {
         expect(res.user.username).toBe('admin');
@@ -69,8 +89,8 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       }
     });
 
-    it('authenticates valid USER credentials', () => {
-      const res = authenticateCredentials('student', 'StudentPassword2026!');
+    it('authenticates valid USER credentials with default digest', () => {
+      const res = authenticateCredentials('student', 'Student#DevSecOps2026');
       expect(res.valid).toBe(true);
       if (res.valid) {
         expect(res.user.username).toBe('student');
@@ -82,11 +102,14 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       const badPass = authenticateCredentials('admin', 'wrongpass');
       expect(badPass.valid).toBe(false);
       if (!badPass.valid) {
-        expect(badPass.error).toContain('inválidas');
+        expect(badPass.error).toContain('Invalid');
       }
 
-      const unknownUser = authenticateCredentials('hacker', 'AdminPassword2026!');
+      const unknownUser = authenticateCredentials('unknown', 'Student#DevSecOps2026');
       expect(unknownUser.valid).toBe(false);
+      if (!unknownUser.valid) {
+        expect(unknownUser.error).toContain('Invalid');
+      }
     });
 
     it('rejects non-string or empty credentials', () => {
@@ -95,8 +118,25 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       const empty = authenticateCredentials('   ', '');
       expect(empty.valid).toBe(false);
       if (!empty.valid) {
-        expect(empty.error).toContain('requeridos');
+        expect(empty.error).toContain('required');
       }
+    });
+
+    it('authenticates demo roles ADMIN and USER and rejects unsupported roles', () => {
+      const adminRes = authenticateDemoRole('ADMIN');
+      expect(adminRes.valid).toBe(true);
+      if (adminRes.valid) {
+        expect(adminRes.user.role).toBe('ADMIN');
+      }
+
+      const userRes = authenticateDemoRole('USER');
+      expect(userRes.valid).toBe(true);
+      if (userRes.valid) {
+        expect(userRes.user.role).toBe('USER');
+      }
+
+      const badRole = authenticateDemoRole('GUEST');
+      expect(badRole.valid).toBe(false);
     });
   });
 
@@ -138,7 +178,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
         generateJwtToken({ id: 'u1', username: '', role: 'USER' }, TEST_SECRET)
       ).toThrow();
       expect(() =>
-        generateJwtToken({ id: 'u1', username: 'x', role: 'GUEST' as any }, TEST_SECRET)
+        generateJwtToken({ id: 'u1', username: 'x', role: 'GUEST' as never }, TEST_SECRET)
       ).toThrow();
     });
 
@@ -151,7 +191,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       const result = verifyJwtToken(expiredToken, TEST_SECRET);
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.error).toContain('expirado');
+        expect(result.error).toContain('expired');
       }
     });
 
@@ -163,7 +203,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       const result = verifyJwtToken(token, 'wrong-secret-key-999999999999999');
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.error).toContain('inválido');
+        expect(result.error).toContain('Invalid');
       }
     });
 
@@ -221,19 +261,26 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   });
 
   describe('validateLoginBody', () => {
-    it('accepts valid login body', () => {
+    it('accepts valid credentials login body and quickRole body', () => {
       const res = validateLoginBody({ username: ' admin ', password: ' secret ' });
       expect(res.valid).toBe(true);
-      if (res.valid) {
+      if (res.valid && res.mode === 'credentials') {
         expect(res.username).toBe('admin');
         expect(res.password).toBe('secret');
       }
+
+      const quickRes = validateLoginBody({ quickRole: 'USER' });
+      expect(quickRes.valid).toBe(true);
+      if (quickRes.valid && quickRes.mode === 'quickRole') {
+        expect(quickRes.quickRole).toBe('USER');
+      }
     });
 
-    it('rejects malformed or incomplete login bodies', () => {
+    it('rejects malformed, invalid quickRole, or incomplete login bodies', () => {
       expect(validateLoginBody(null).valid).toBe(false);
       expect(validateLoginBody([]).valid).toBe(false);
       expect(validateLoginBody('str').valid).toBe(false);
+      expect(validateLoginBody({ quickRole: 'ROOT' }).valid).toBe(false);
       expect(validateLoginBody({ username: '', password: '123' }).valid).toBe(false);
       expect(validateLoginBody({ username: 'admin', password: '   ' }).valid).toBe(false);
     });
@@ -242,14 +289,14 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   describe('validateStructuredRequestBody', () => {
     it('validates and sanitizes valid structured request with context', () => {
       const res = validateStructuredRequestBody({
-        query: '  ¿Qué es SOLID?\x00 ',
+        query: '  What is SOLID?\x00 ',
         studentLevel: 'avanzado',
         preferredLanguage: 'rust',
         conversationContext: ['1', '2', '3', '4', '5', '6', '7', { topic: 'SRP' }, '   '],
       });
       expect(res.valid).toBe(true);
       if (res.valid) {
-        expect(res.data.query).toBe('¿Qué es SOLID?');
+        expect(res.data.query).toBe('What is SOLID?');
         expect(res.data.studentLevel).toBe('avanzado');
         expect(res.data.preferredLanguage).toBe('rust');
         expect(res.data.conversationContext.length).toBeLessThanOrEqual(MAX_CONTEXT_ITEMS);
@@ -259,9 +306,9 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
 
     it('defaults invalid studentLevel and preferredLanguage safely', () => {
       const res = validateStructuredRequestBody({
-        query: 'Patrón Strategy',
-        studentLevel: 'doctorado',
-        preferredLanguage: 'brainfuck',
+        query: 'Strategy Pattern',
+        studentLevel: 'phd',
+        preferredLanguage: 'unknown',
       });
       expect(res.valid).toBe(true);
       if (res.valid) {
@@ -289,12 +336,12 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   describe('validateChallengeRequestBody', () => {
     it('accepts valid topic and defaults omitted topic', () => {
       const withTopic = validateChallengeRequestBody({
-        topic: '  Concurrencia en Go ',
+        topic: '  Go Concurrency ',
         studentLevel: 'principiante',
       });
       expect(withTopic.valid).toBe(true);
       if (withTopic.valid) {
-        expect(withTopic.data.topic).toBe('Concurrencia en Go');
+        expect(withTopic.data.topic).toBe('Go Concurrency');
         expect(withTopic.data.studentLevel).toBe('principiante');
       }
 
@@ -324,8 +371,8 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
     it('accepts valid messages array and defaults options', () => {
       const res = validateChatRequestBody({
         messages: [
-          { role: 'user', content: '  Hola docente  ' },
-          { role: 'assistant', content: 'Hola estudiante' },
+          { role: 'user', content: '  Hello mentor  ' },
+          { role: 'assistant', content: 'Hello student' },
         ],
         studentLevel: 'avanzado',
         preferredLanguage: 'python',
@@ -333,7 +380,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       expect(res.valid).toBe(true);
       if (res.valid) {
         expect(res.data.messages).toHaveLength(2);
-        expect(res.data.messages[0].content).toBe('Hola docente');
+        expect(res.data.messages[0].content).toBe('Hello mentor');
         expect(res.data.studentLevel).toBe('avanzado');
         expect(res.data.preferredLanguage).toBe('python');
       }
@@ -372,7 +419,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
     it('throws on empty, non-string, or malformed JSON', () => {
       expect(() => cleanAndParseJson('')).toThrow();
       expect(() => cleanAndParseJson('   ')).toThrow();
-      expect(() => cleanAndParseJson(null as any)).toThrow();
+      expect(() => cleanAndParseJson(null as unknown as string)).toThrow();
       expect(() => cleanAndParseJson('{invalid')).toThrow();
     });
   });
@@ -381,28 +428,31 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
     it('preserves valid structured explanation fields and filters non-string array entries', () => {
       const sanitized = sanitizeStructuredExplanation(
         {
-          topic: '  Patrón Observer ',
+          topic: '  Observer Pattern ',
           isInsufficientInfo: false,
           insufficientInfoNotice: '',
-          definition: 'Definición formal',
-          explanation: 'Explicación técnica',
-          steps: ['Paso 1', 123, 'Paso 2'],
+          definition: 'Formal definition',
+          explanation: 'Technical explanation',
+          steps: ['Step 1', 123, 'Step 2'],
           example: {
             language: 'python',
             code: 'class Subject: pass',
-            explanation: 'Ejemplo en Python',
+            explanation: 'Python example',
           },
-          practicalRecommendation: 'Desacoplar eventos',
-          verificationWarning: 'Revisar docs',
+          practicalRecommendation: 'Decouple events',
+          verificationWarning: 'Check official docs',
           relatedConcepts: ['Pub/Sub', null],
           verifiedReferences: ['GoF 1994', 42],
         },
         'typescript'
       );
 
-      expect(sanitized.topic).toBe('Patrón Observer');
-      expect(sanitized.steps).toEqual(['Paso 1', 'Paso 2']);
+      expect(sanitized.topic).toBe('Observer Pattern');
+      expect(sanitized.steps).toEqual(['Step 1', 'Step 2']);
       expect(sanitized.example.language).toBe('python');
+      expect(sanitized.example.explanation).toBe('Python example');
+      expect(sanitized.practicalRecommendation).toBe('Decouple events');
+      expect(sanitized.verificationWarning).toBe('Check official docs');
       expect(sanitized.relatedConcepts).toEqual(['Pub/Sub']);
       expect(sanitized.verifiedReferences).toEqual(['GoF 1994']);
     });
@@ -412,6 +462,8 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
         {
           isInsufficientInfo: 1,
           example: { code: '   ' },
+          practicalRecommendation: '   ',
+          verificationWarning: '   ',
         },
         'java'
       );
@@ -421,6 +473,8 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       expect(sanitized.definition).toBe('Definición no disponible.');
       expect(sanitized.example.language).toBe('java');
       expect(sanitized.example.code).toContain('contexto');
+      expect(sanitized.practicalRecommendation).toContain('especificaciones');
+      expect(sanitized.verificationWarning).toContain('documentación técnica');
       expect(sanitized.steps).toEqual([]);
       expect(sanitized.relatedConcepts).toEqual([]);
       expect(sanitized.verifiedReferences).toEqual([]);

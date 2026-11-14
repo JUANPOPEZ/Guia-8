@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { X, Activity, ShieldAlert, RefreshCw, Lock } from 'lucide-react';
 import { AdminMetrics } from '../types';
 
@@ -19,7 +19,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchMetrics = async () => {
+  const fetchMetrics = useCallback(async () => {
     setLoading(true);
     setError(null);
     setMetrics(null);
@@ -28,24 +28,28 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
       if (authToken) {
         headers.Authorization = `Bearer ${authToken}`;
       }
-      const res = await fetch('/api/admin/metrics', { headers });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || `Error HTTP ${res.status}`);
+      const res = await fetch('/api/admin/security-audit', { headers });
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: AdminMetrics;
+        error?: string;
+      };
+      if (!res.ok || !json.success || !json.data) {
+        throw new Error(json.error || `HTTP Error ${res.status}`);
       }
       setMetrics(json.data);
-    } catch (err: any) {
-      setError(err?.message || 'No se pudieron obtener las métricas.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to retrieve security audit metrics.');
     } finally {
       setLoading(false);
     }
-  };
+  }, [authToken]);
 
   useEffect(() => {
     if (isOpen) {
-      fetchMetrics();
+      void fetchMetrics();
     }
-  }, [isOpen, authToken]);
+  }, [isOpen, fetchMetrics]);
 
   if (!isOpen) return null;
 
@@ -59,25 +63,31 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Auditoría de Seguridad & Métricas Admin (GET /api/admin/metrics)
+                Security Audit & Admin Telemetry (GET /api/admin/security-audit)
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Ruta exclusiva para rol ADMIN (OWASP A01 & A09)
+                Restricted to ADMIN role (OWASP A01 & A09)
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={fetchMetrics}
+              type="button"
+              onClick={() => {
+                void fetchMetrics();
+              }}
               disabled={loading}
               className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
-              title="Recargar métricas"
+              title="Refresh security metrics"
+              aria-label="Refresh security metrics"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
             <button
+              type="button"
               onClick={onClose}
               className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
+              aria-label="Close security audit modal"
             >
               <X className="w-4 h-4" />
             </button>
@@ -87,7 +97,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-5">
           {loading && (
             <div className="py-10 text-center text-xs text-slate-500">
-              Consultando telemetría de seguridad en el servidor...
+              Querying server security audit telemetry...
             </div>
           )}
 
@@ -96,18 +106,19 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
               <div className="flex items-start gap-2.5 text-xs sm:text-sm font-medium">
                 <Lock className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-bold">Acceso Restringido por RBAC / JWT</p>
+                  <p className="font-bold">Access Restricted by JWT / RBAC</p>
                   <p className="mt-0.5 opacity-90">{error}</p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   onClose();
                   onOpenAuth();
                 }}
-                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors cursor-pointer"
               >
-                Iniciar Sesión como ADMIN
+                Sign In as ADMIN
               </button>
             </div>
           )}
@@ -118,7 +129,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
-                    Total Peticiones API
+                    Total API Requests
                   </span>
                   <p className="text-xl font-extrabold text-slate-900 dark:text-white mt-0.5">
                     {metrics.totalRequests}
@@ -126,7 +137,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900">
                   <span className="text-[11px] text-indigo-700 dark:text-indigo-300 font-semibold">
-                    Peticiones ADMIN / USER
+                    ADMIN / USER Requests
                   </span>
                   <p className="text-xl font-extrabold text-indigo-900 dark:text-indigo-100 mt-0.5">
                     {metrics.requestsByRole.ADMIN} / {metrics.requestsByRole.USER}
@@ -134,7 +145,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900">
                   <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">
-                    Bloqueos 401 / 403
+                    Blocked 401 / 403
                   </span>
                   <p className="text-xl font-extrabold text-amber-900 dark:text-amber-100 mt-0.5">
                     {metrics.securityEvents.unauthorized401} / {metrics.securityEvents.forbidden403}
@@ -142,7 +153,7 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
                   <span className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">
-                    Logins Exitosos / Fallidos
+                    Logins OK / Failed
                   </span>
                   <p className="text-xl font-extrabold text-emerald-900 dark:text-emerald-100 mt-0.5">
                     {metrics.securityEvents.loginSuccess} / {metrics.securityEvents.loginFailure}
@@ -154,22 +165,22 @@ export const AdminMetricsModal: React.FC<AdminMetricsModalProps> = ({
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   <ShieldAlert className="w-3.5 h-3.5 text-violet-500" />
-                  <span>Registro de Auditoría Reciente (OWASP A09 - Sin secretos)</span>
+                  <span>Recent Security Audit Log (OWASP A09 – No Sensitive Data)</span>
                 </div>
                 <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400">
                       <tr>
-                        <th className="px-3 py-2 font-semibold">Hora</th>
-                        <th className="px-3 py-2 font-semibold">Método</th>
-                        <th className="px-3 py-2 font-semibold">Ruta</th>
-                        <th className="px-3 py-2 font-semibold">Rol</th>
-                        <th className="px-3 py-2 font-semibold">Estado</th>
+                        <th className="px-3 py-2 font-semibold">Time (UTC)</th>
+                        <th className="px-3 py-2 font-semibold">Method</th>
+                        <th className="px-3 py-2 font-semibold">Path</th>
+                        <th className="px-3 py-2 font-semibold">Role</th>
+                        <th className="px-3 py-2 font-semibold">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {metrics.recentAuditLogs.map((log, i) => (
-                        <tr key={i} className="text-slate-700 dark:text-slate-300">
+                        <tr key={`${log.timestamp}-${i}`} className="text-slate-700 dark:text-slate-300">
                           <td className="px-3 py-2 font-mono text-[11px]">
                             {log.timestamp.slice(11, 19)}
                           </td>

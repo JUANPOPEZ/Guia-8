@@ -250,16 +250,21 @@ export default function App() {
 
       clearTimeout(timeoutId);
 
-      const json = await res.json();
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: StructuredExplanation;
+        error?: string;
+        details?: string;
+      };
       if (res.status === 401) {
         setAuthSession(null);
-        setAuthNotice(json.error || 'Inicia sesión con un rol (USER o ADMIN) para consultar al tutor.');
+        setAuthNotice(json.error || 'Please sign in as USER or ADMIN to query the tutor.');
         setIsAuthModalOpen(true);
       }
-      if (!res.ok || !json.success) {
+      if (!res.ok || !json.success || !json.data) {
         const errorDetail = json.details ? ` (${json.details})` : '';
         throw new Error(
-          (json.error || 'No se pudo procesar la consulta con el asistente.') + errorDetail
+          (json.error || 'Failed to process structured request.') + errorDetail
         );
       }
 
@@ -269,13 +274,13 @@ export default function App() {
       }
       setActiveTab('tutor');
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
-        setErrorMessage('La consulta fue cancelada o superó el tiempo límite. Puedes volver a intentarlo.');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setErrorMessage('The request was cancelled or timed out. Please try again.');
       } else {
         setErrorMessage(
-          err?.message || 'Error de comunicación con el servicio de IA.'
+          err instanceof Error ? err.message : 'Communication error with the API service.'
         );
       }
     } finally {
@@ -328,14 +333,18 @@ export default function App() {
         }),
       });
 
-      const json = await res.json();
+      const json = (await res.json()) as {
+        success?: boolean;
+        reply?: string;
+        error?: string;
+      };
       if (res.status === 401) {
         setAuthSession(null);
-        setAuthNotice(json.error || 'Tu sesión JWT expiró o no está iniciada.');
+        setAuthNotice(json.error || 'Your JWT session has expired or is not initialized.');
         setIsAuthModalOpen(true);
       }
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Error en la respuesta del docente.');
+      if (!res.ok || !json.success || typeof json.reply !== 'string') {
+        throw new Error(json.error || 'Error receiving follow-up response.');
       }
 
       const assistantMsg: ChatMessage = {
@@ -346,8 +355,8 @@ export default function App() {
       };
 
       setFollowUpMessages([...newMessages, assistantMsg]);
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Error en el diálogo de seguimiento.');
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Follow-up conversation error.');
     } finally {
       setIsFollowUpLoading(false);
     }
@@ -437,7 +446,7 @@ export default function App() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    handleConsult();
+                    void handleConsult();
                   }}
                   className="space-y-3"
                 >
@@ -451,7 +460,7 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
-                          handleConsult();
+                          void handleConsult();
                         }
                       }}
                     />
@@ -488,44 +497,44 @@ export default function App() {
                     <span className="text-slate-400 font-medium">Sugerencias rápidas:</span>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleConsult(
+                      onClick={() => {
+                        void handleConsult(
                           'Explica el Principio de Inversión de Dependencias (DIP) y cómo se diferencia de Inyección de Dependencias.'
-                        )
-                      }
+                        );
+                      }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200 dark:border-slate-700 transition-colors"
                     >
                       Principio DIP vs Inyección de Dependencias
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleConsult(
+                      onClick={() => {
+                        void handleConsult(
                           'Explica las propiedades ACID en bases de datos con un ejemplo de transacción bancaria.'
-                        )
-                      }
+                        );
+                      }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200 dark:border-slate-700 transition-colors"
                     >
                       Propiedades ACID en Transacciones
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleConsult(
+                      onClick={() => {
+                        void handleConsult(
                           'Explica el patrón Strategy y cómo reemplazar condicionales switch con clases de estrategia.'
-                        )
-                      }
+                        );
+                      }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200 dark:border-slate-700 transition-colors"
                     >
                       Patrón Strategy
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        handleConsult(
+                      onClick={() => {
+                        void handleConsult(
                           'Explica qué es un Deadlock (Interbloqueo), sus 4 condiciones de Coffman y cómo prevenirlo.'
-                        )
-                      }
+                        );
+                      }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200 dark:border-slate-700 transition-colors"
                     >
                       Deadlocks y Condiciones de Coffman
@@ -555,9 +564,9 @@ export default function App() {
             {currentResponse && (
               <StructuredResponseView
                 data={currentResponse}
-                onExploreRelated={(relatedConcept) =>
-                  handleConsult(`Explica detalladamente: ${relatedConcept}`)
-                }
+                onExploreRelated={(relatedConcept) => {
+                  void handleConsult(`Explica detalladamente: ${relatedConcept}`);
+                }}
                 onSaveToNotes={toggleSaveNote}
                 isSaved={isCurrentSaved}
               />
@@ -596,7 +605,12 @@ export default function App() {
                 )}
 
                 {/* Follow up input */}
-                <form onSubmit={handleFollowUp} className="flex gap-2 pt-2">
+                <form
+                  onSubmit={(e) => {
+                    void handleFollowUp(e);
+                  }}
+                  className="flex gap-2 pt-2"
+                >
                   <input
                     type="text"
                     value={followUpInput}
@@ -625,7 +639,9 @@ export default function App() {
         {/* Tab: Curriculum Explorer */}
         {activeTab === 'curriculum' && (
           <CurriculumBrowser
-            onSelectConcept={(q) => handleConsult(q)}
+            onSelectConcept={(q) => {
+              void handleConsult(q);
+            }}
             currentLevel={studentLevel}
           />
         )}
@@ -637,7 +653,7 @@ export default function App() {
             authToken={authSession?.token ?? null}
             userRole={authSession?.user.role}
             onOpenAuth={() => {
-              setAuthNotice('La generación de desafíos técnicos requiere rol ADMIN.');
+              setAuthNotice('Generating technical challenges requires the ADMIN role.');
               setIsAuthModalOpen(true);
             }}
           />
@@ -645,7 +661,7 @@ export default function App() {
 
         {/* Tab: Ambiguous Test Lab (Insufficient Info) */}
         {activeTab === 'ambiguous' && (
-          <InsufficientInfoDemo onTestQuery={(q) => handleConsult(q)} />
+          <InsufficientInfoDemo onTestQuery={(q) => { void handleConsult(q); }} />
         )}
 
         {/* Tab: Saved Study Notes */}
@@ -688,7 +704,7 @@ export default function App() {
         onClose={() => setIsAdminMetricsOpen(false)}
         authToken={authSession?.token ?? null}
         onOpenAuth={() => {
-          setAuthNotice('El panel de auditoría y métricas requiere rol ADMIN.');
+          setAuthNotice('The Security Audit & Metrics panel requires the ADMIN role.');
           setIsAuthModalOpen(true);
         }}
       />
