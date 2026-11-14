@@ -21,11 +21,14 @@ import { CurriculumBrowser } from './components/CurriculumBrowser';
 import { ChallengeSimulator } from './components/ChallengeSimulator';
 import { StudyLog } from './components/StudyLog';
 import { InsufficientInfoDemo } from './components/InsufficientInfoDemo';
+import { AuthModal } from './components/AuthModal';
+import { AdminMetricsModal } from './components/AdminMetricsModal';
 import {
   StudentLevel,
   ProgrammingLanguage,
   StructuredExplanation,
   ChatMessage,
+  AuthSession,
 } from './types';
 
 // Default initial explanation for immediate pedagogical showcase
@@ -125,6 +128,36 @@ export default function App() {
   const [followUpInput, setFollowUpInput] = useState('');
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
 
+  // JWT Authentication session stored in localStorage
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
+    try {
+      const stored = localStorage.getItem('ingenierodocente_auth');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [isAdminMetricsOpen, setIsAdminMetricsOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (authSession) {
+        localStorage.setItem('ingenierodocente_auth', JSON.stringify(authSession));
+      } else {
+        localStorage.removeItem('ingenierodocente_auth');
+      }
+    } catch (e) {
+      console.error('Error saving auth session to localStorage', e);
+    }
+  }, [authSession]);
+
+  const handleLogout = () => {
+    setAuthSession(null);
+    setAuthNotice(null);
+  };
+
   // Saved notes in localStorage
   const [savedNotes, setSavedNotes] = useState<StructuredExplanation[]>(() => {
     try {
@@ -199,9 +232,14 @@ export default function App() {
     setFollowUpMessages([]);
 
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authSession?.token) {
+        headers.Authorization = `Bearer ${authSession.token}`;
+      }
+
       const res = await fetch('/api/assist/structured', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           query: q,
@@ -213,6 +251,11 @@ export default function App() {
       clearTimeout(timeoutId);
 
       const json = await res.json();
+      if (res.status === 401) {
+        setAuthSession(null);
+        setAuthNotice(json.error || 'Inicia sesión con un rol (USER o ADMIN) para consultar al tutor.');
+        setIsAuthModalOpen(true);
+      }
       if (!res.ok || !json.success) {
         const errorDetail = json.details ? ` (${json.details})` : '';
         throw new Error(
@@ -270,9 +313,14 @@ export default function App() {
         })),
       ];
 
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authSession?.token) {
+        headers.Authorization = `Bearer ${authSession.token}`;
+      }
+
       const res = await fetch('/api/assist/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           messages: contextMessages,
           studentLevel,
@@ -281,6 +329,11 @@ export default function App() {
       });
 
       const json = await res.json();
+      if (res.status === 401) {
+        setAuthSession(null);
+        setAuthNotice(json.error || 'Tu sesión JWT expiró o no está iniciada.');
+        setIsAuthModalOpen(true);
+      }
       if (!res.ok || !json.success) {
         throw new Error(json.error || 'Error en la respuesta del docente.');
       }
@@ -327,6 +380,13 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         notesCount={savedNotes.length}
+        authSession={authSession}
+        onOpenAuth={() => {
+          setAuthNotice(null);
+          setIsAuthModalOpen(true);
+        }}
+        onLogout={handleLogout}
+        onOpenAdminMetrics={() => setIsAdminMetricsOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -572,7 +632,15 @@ export default function App() {
 
         {/* Tab: Challenge & Evaluation Simulator */}
         {activeTab === 'challenge' && (
-          <ChallengeSimulator studentLevel={studentLevel} />
+          <ChallengeSimulator
+            studentLevel={studentLevel}
+            authToken={authSession?.token ?? null}
+            userRole={authSession?.user.role}
+            onOpenAuth={() => {
+              setAuthNotice('La generación de desafíos técnicos requiere rol ADMIN.');
+              setIsAuthModalOpen(true);
+            }}
+          />
         )}
 
         {/* Tab: Ambiguous Test Lab (Insufficient Info) */}
@@ -599,6 +667,31 @@ export default function App() {
 
       {/* Rules and Academic Charter Modal */}
       <RulesModal isOpen={isRulesOpen} onClose={() => setIsRulesOpen(false)} />
+
+      {/* JWT Authentication & RBAC Role Selector Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        session={authSession}
+        onLoginSuccess={(session) => {
+          setAuthSession(session);
+          setErrorMessage(null);
+          setAuthNotice(null);
+        }}
+        onLogout={handleLogout}
+        authNotice={authNotice}
+      />
+
+      {/* Admin Security Audit & Metrics Modal */}
+      <AdminMetricsModal
+        isOpen={isAdminMetricsOpen}
+        onClose={() => setIsAdminMetricsOpen(false)}
+        authToken={authSession?.token ?? null}
+        onOpenAuth={() => {
+          setAuthNotice('El panel de auditoría y métricas requiere rol ADMIN.');
+          setIsAuthModalOpen(true);
+        }}
+      />
     </div>
   );
 }

@@ -1,6 +1,15 @@
 import React from 'react';
-import { GraduationCap, ShieldCheck, Code, SlidersHorizontal, BookOpen } from 'lucide-react';
-import { StudentLevel, ProgrammingLanguage } from '../types';
+import {
+  GraduationCap,
+  ShieldCheck,
+  Code,
+  SlidersHorizontal,
+  BookOpen,
+  KeyRound,
+  Activity,
+  LogOut,
+} from 'lucide-react';
+import { StudentLevel, ProgrammingLanguage, AuthSession } from '../types';
 
 interface HeaderProps {
   studentLevel: StudentLevel;
@@ -11,6 +20,10 @@ interface HeaderProps {
   activeTab: 'tutor' | 'curriculum' | 'challenge' | 'notes' | 'ambiguous';
   setActiveTab: (tab: 'tutor' | 'curriculum' | 'challenge' | 'notes' | 'ambiguous') => void;
   notesCount: number;
+  authSession: AuthSession | null;
+  onOpenAuth: () => void;
+  onLogout: () => void;
+  onOpenAdminMetrics: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -22,6 +35,10 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   notesCount,
+  authSession,
+  onOpenAuth,
+  onLogout,
+  onOpenAdminMetrics,
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 transition-colors">
@@ -47,7 +64,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Student Controls: Level, Language & Academic Charter */}
+        {/* Student Controls: Level, Language, JWT Auth & Academic Charter */}
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Level Selector */}
           <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/80 text-xs">
@@ -86,10 +103,54 @@ export const Header: React.FC<HeaderProps> = ({
             </select>
           </div>
 
+          {/* JWT Session & Role Control */}
+          {authSession ? (
+            <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 text-xs">
+              <button
+                onClick={onOpenAuth}
+                className="flex items-center gap-1.5 font-semibold text-emerald-800 dark:text-emerald-200 hover:underline cursor-pointer"
+                title="Cambiar rol o gestionar sesión JWT"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>{authSession.user.username}</span>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-600 text-white">
+                  {authSession.user.role}
+                </span>
+              </button>
+              <button
+                onClick={onLogout}
+                className="p-0.5 text-emerald-700 dark:text-emerald-300 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                title="Cerrar sesión JWT"
+                aria-label="Cerrar sesión JWT"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onOpenAuth}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 rounded-lg text-xs font-semibold border border-amber-300 dark:border-amber-800 transition-colors cursor-pointer"
+              title="Iniciar sesión para obtener token JWT"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>Iniciar Sesión (JWT)</span>
+            </button>
+          )}
+
+          {/* Admin Metrics Button */}
+          <button
+            onClick={onOpenAdminMetrics}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 hover:bg-violet-100 dark:bg-violet-950/60 dark:hover:bg-violet-900/60 text-violet-700 dark:text-violet-300 rounded-lg text-xs font-semibold border border-violet-200 dark:border-violet-800 transition-colors cursor-pointer"
+            title="Ver métricas y auditoría de seguridad (Solo ADMIN)"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Auditoría Admin</span>
+          </button>
+
           {/* Rules & Charter Modal Button */}
           <button
             onClick={onOpenRules}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 rounded-lg text-xs font-semibold border border-indigo-200 dark:border-indigo-800 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 rounded-lg text-xs font-semibold border border-indigo-200 dark:border-indigo-800 transition-colors cursor-pointer"
             title="Ver directrices académicas y reglas de verificación"
           >
             <ShieldCheck className="w-3.5 h-3.5" />

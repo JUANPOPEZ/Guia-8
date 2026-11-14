@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "tsconfigFile": "tsconfig.stryker.json",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  },
+  "mutate": [
+    "src/security/authAndValidation.ts"
+  ],
+  "coverageAnalysis": "perTest",
+  "reporters": [
+    "progress",
+    "clear-text",
+    "html"
+  ],
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 50
+  },
+  "tempDirName": ".stryker-tmp"
+}

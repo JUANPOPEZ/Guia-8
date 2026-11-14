@@ -69,3 +69,44 @@ export interface CurriculumTopic {
     difficulty: StudentLevel;
   }[];
 }
+
+export type UserRole = 'ADMIN' | 'USER';
+
+export interface AuthSession {
+  token: string;
+  user: {
+    id: string;
+    username: string;
+    role: UserRole;
+    displayName: string;
+  };
+}
+
+export interface AuditLogEntry {
+  timestamp: string;
+  method: string;
+  path: string;
+  role: string;
+  statusCode: number;
+  durationMs: number;
+}
+
+export interface AdminMetrics {
+  uptimeSeconds: number;
+  totalRequests: number;
+  requestsByRole: {
+    ADMIN: number;
+    USER: number;
+    ANONYMOUS: number;
+  };
+  securityEvents: {
+    unauthorized401: number;
+    forbidden403: number;
+    rateLimited429: number;
+    loginSuccess: number;
+    loginFailure: number;
+  };
+  endpointHits: Record<string, number>;
+  recentAuditLogs: AuditLogEntry[];
+}
+

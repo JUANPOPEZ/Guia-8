@@ -11,13 +11,21 @@ import {
   Brain,
   ArrowRight,
 } from 'lucide-react';
-import { AcademicChallenge, StudentLevel } from '../types';
+import { AcademicChallenge, StudentLevel, UserRole } from '../types';
 
 interface ChallengeSimulatorProps {
   studentLevel: StudentLevel;
+  authToken: string | null;
+  userRole?: UserRole;
+  onOpenAuth: () => void;
 }
 
-export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({ studentLevel }) => {
+export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({
+  studentLevel,
+  authToken,
+  userRole,
+  onOpenAuth,
+}) => {
   const [topic, setTopic] = useState('Patrones de Diseño y Principios SOLID');
   const [loading, setLoading] = useState(false);
   const [challenge, setChallenge] = useState<AcademicChallenge | null>(null);
@@ -42,9 +50,14 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({ studentL
     setIsSubmitted(false);
 
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+
       const res = await fetch('/api/assist/challenge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           topic: t,
           studentLevel,
@@ -141,9 +154,19 @@ export const ChallengeSimulator: React.FC<ChallengeSimulatorProps> = ({ studentL
 
       {/* Error display */}
       {errorMsg && (
-        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs sm:text-sm flex items-center gap-3">
-          <XCircle className="w-5 h-5 text-rose-500 shrink-0" />
-          <span>{errorMsg}</span>
+        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs sm:text-sm flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <XCircle className="w-5 h-5 text-rose-500 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+          {userRole !== 'ADMIN' && (
+            <button
+              onClick={onOpenAuth}
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Cambiar a Rol ADMIN
+            </button>
+          )}
         </div>
       )}
 
