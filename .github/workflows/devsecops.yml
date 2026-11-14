@@ -2,13 +2,18 @@ name: DevSecOps CI/CD Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   devsecops-quality-and-security:
     runs-on: ubuntu-latest
+
+    env:
+      JWT_SECRET: ${{ secrets.JWT_SECRET || 'IngenieroDocente_CI_Test_Secret_2026!' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'test-api-key-for-ci' }}
+      ALLOWED_ORIGIN: '*'
 
     steps:
       - name: Checkout repository
@@ -18,10 +23,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-         
 
       - name: Install dependencies
-        run: npm intall
+        run: npm install
 
       - name: TypeScript typecheck
         run: npm run lint
