@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  JWT_SECRET: ci-devsecops-jwt-secret-key-2026-secure
-  GEMINI_API_KEY: ci-placeholder-gemini-api-key
-  ALLOWED_ORIGIN: '*'
-
 jobs:
   devsecops-quality-and-security:
     runs-on: ubuntu-latest
@@ -22,7 +17,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Configure CI runtime environment
+        run: |
+          echo "JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> "$GITHUB_ENV"
+          echo "GEMINI_API_KEY=ci-placeholder-key" >> "$GITHUB_ENV"
+          echo "ALLOWED_ORIGIN=http://localhost:3000" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps

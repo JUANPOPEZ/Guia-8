@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { describe, it, expect, afterEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 import {
@@ -26,7 +27,7 @@ import {
 } from '../src/security/authAndValidation';
 
 describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
-  const TEST_SECRET = 'super-secret-jwt-key-for-unit-tests-2026';
+  const TEST_SECRET = crypto.randomBytes(32).toString('hex');
 
   afterEach(() => {
     delete process.env.DEMO_ADMIN_PASSPHRASE;
@@ -78,9 +79,10 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   });
 
   describe('authenticateCredentials & authenticateDemoRole', () => {
-    it('authenticates valid ADMIN credentials via env override or default digest', () => {
-      process.env.DEMO_ADMIN_PASSPHRASE = 'ci-admin-test-passphrase';
-      const res = authenticateCredentials('  ADMIN ', 'ci-admin-test-passphrase');
+    it('authenticates valid ADMIN credentials via env override', () => {
+      const dynamicAdminPass = crypto.randomUUID();
+      process.env.DEMO_ADMIN_PASSPHRASE = dynamicAdminPass;
+      const res = authenticateCredentials('  ADMIN ', dynamicAdminPass);
       expect(res.valid).toBe(true);
       if (res.valid) {
         expect(res.user.username).toBe('admin');
@@ -89,8 +91,10 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       }
     });
 
-    it('authenticates valid USER credentials with default digest', () => {
-      const res = authenticateCredentials('student', 'Student#DevSecOps2026');
+    it('authenticates valid USER credentials via env override', () => {
+      const dynamicUserPass = crypto.randomUUID();
+      process.env.DEMO_USER_PASSPHRASE = dynamicUserPass;
+      const res = authenticateCredentials('student', dynamicUserPass);
       expect(res.valid).toBe(true);
       if (res.valid) {
         expect(res.user.username).toBe('student');
@@ -99,13 +103,13 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
     });
 
     it('rejects wrong password or unknown username', () => {
-      const badPass = authenticateCredentials('admin', 'wrongpass');
+      const badPass = authenticateCredentials('admin', crypto.randomUUID());
       expect(badPass.valid).toBe(false);
       if (!badPass.valid) {
         expect(badPass.error).toContain('Invalid');
       }
 
-      const unknownUser = authenticateCredentials('unknown', 'Student#DevSecOps2026');
+      const unknownUser = authenticateCredentials('unknown', crypto.randomUUID());
       expect(unknownUser.valid).toBe(false);
       if (!unknownUser.valid) {
         expect(unknownUser.error).toContain('Invalid');
@@ -186,7 +190,7 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       const expiredToken = jwt.sign(
         { sub: 'u1', username: 'admin', role: 'ADMIN' },
         TEST_SECRET,
-        { expiresIn: -10 }
+        { algorithm: 'HS256', expiresIn: -10 }
       );
       const result = verifyJwtToken(expiredToken, TEST_SECRET);
       expect(result.valid).toBe(false);
@@ -195,16 +199,24 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       }
     });
 
-    it('rejects tokens signed with wrong secret or corrupted signature', () => {
+    it('rejects tokens signed with wrong secret, disallowed algorithm, or corrupted signature', () => {
       const token = generateJwtToken(
         { id: 'u1', username: 'admin', role: 'ADMIN' },
         TEST_SECRET
       );
-      const result = verifyJwtToken(token, 'wrong-secret-key-999999999999999');
+      const otherSecret = crypto.randomBytes(32).toString('hex');
+      const result = verifyJwtToken(token, otherSecret);
       expect(result.valid).toBe(false);
       if (!result.valid) {
         expect(result.error).toContain('Invalid');
       }
+
+      const hs512Token = jwt.sign(
+        { sub: 'u1', username: 'admin', role: 'ADMIN' },
+        TEST_SECRET,
+        { algorithm: 'HS512', expiresIn: '1h' }
+      );
+      expect(verifyJwtToken(hs512Token, TEST_SECRET).valid).toBe(false);
     });
 
     it('rejects empty, non-string, or missing-claims tokens', () => {
@@ -212,12 +224,15 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
       expect(verifyJwtToken('   ', TEST_SECRET).valid).toBe(false);
       expect(verifyJwtToken(null, TEST_SECRET).valid).toBe(false);
 
-      const stringPayloadToken = jwt.sign('plain-string-payload', TEST_SECRET);
+      const stringPayloadToken = jwt.sign('plain-string-payload', TEST_SECRET, {
+        algorithm: 'HS256',
+      });
       expect(verifyJwtToken(stringPayloadToken, TEST_SECRET).valid).toBe(false);
 
       const invalidClaimsToken = jwt.sign(
         { sub: 'u1', username: 'test', role: 'SUPERUSER' },
-        TEST_SECRET
+        TEST_SECRET,
+        { algorithm: 'HS256' }
       );
       const claimsRes = verifyJwtToken(invalidClaimsToken, TEST_SECRET);
       expect(claimsRes.valid).toBe(false);
@@ -225,7 +240,9 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
         expect(claimsRes.error).toContain('RBAC');
       }
 
-      const missingSubToken = jwt.sign({ username: 'test', role: 'USER' }, TEST_SECRET);
+      const missingSubToken = jwt.sign({ username: 'test', role: 'USER' }, TEST_SECRET, {
+        algorithm: 'HS256',
+      });
       expect(verifyJwtToken(missingSubToken, TEST_SECRET).valid).toBe(false);
     });
   });

@@ -179,7 +179,7 @@ export function authenticateDemoRole(
   };
 }
 
-// OWASP A07:2023 – Identification and Authentication Failures: Sign short-lived JWT (default 1h).
+// OWASP A07:2023 – Identification and Authentication Failures: Sign short-lived JWT (default 1h) with explicit HS256 algorithm.
 export function generateJwtToken(
   user: { id: string; username: string; role: UserRole },
   secret: string = getJwtSecret(),
@@ -196,7 +196,7 @@ export function generateJwtToken(
       role: user.role,
     },
     secret,
-    { expiresIn }
+    { algorithm: 'HS256', expiresIn }
   );
 }
 
@@ -226,7 +226,7 @@ export function verifyJwtToken(
   }
 
   try {
-    const decoded = jwt.verify(token.trim(), secret);
+    const decoded = jwt.verify(token.trim(), secret, { algorithms: ['HS256'] });
     if (!decoded || typeof decoded === 'string') {
       return { valid: false, error: 'Invalid JWT payload structure.' };
     }

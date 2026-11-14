@@ -36,6 +36,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -93,11 +94,27 @@ function getErrorMessage(error: unknown): string {
   return 'Unknown internal error';
 }
 
+function stripTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
 // OWASP A05:2023 – Security Misconfiguration:
-// Enforce hardened HTTP security headers via helmet() (CSP/xFrameOptions tuned for Vite/iframe preview compatibility).
+// Enforce hardened HTTP security headers via helmet() with explicit Content-Security-Policy directives.
 app.use(
   helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        connectSrc: ["'self'", 'https:'],
+        fontSrc: ["'self'", 'data:'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'self'", 'https://aistudio.google.com', 'https://*.usercontent.goog'],
+      },
+    },
     crossOriginEmbedderPolicy: false,
     xFrameOptions: false,
   })
@@ -108,21 +125,21 @@ app.use(
 const allowedOrigins = new Set<string>([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  ...(process.env.APP_URL ? [process.env.APP_URL.replace(/\/$/, '')] : []),
+  ...(process.env.APP_URL ? [stripTrailingSlash(process.env.APP_URL)] : []),
   ...(process.env.ALLOWED_ORIGIN
     ? process.env.ALLOWED_ORIGIN.split(',')
-        .map((o) => o.trim().replace(/\/$/, ''))
-        .filter(Boolean)
+        .map((o) => stripTrailingSlash(o.trim()))
+        .filter((o) => Boolean(o) && o !== '*')
     : []),
 ]);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has('*')) {
+      if (!origin) {
         return callback(null, true);
       }
-      const normalizedOrigin = origin.replace(/\/$/, '');
+      const normalizedOrigin = stripTrailingSlash(origin);
       if (allowedOrigins.has(normalizedOrigin)) {
         return callback(null, true);
       }
@@ -747,7 +764,7 @@ async function startServer(): Promise<void> {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.info(`IngenieroDocente Server running on http://0.0.0.0:${PORT}`);
+    console.info(`IngenieroDocente Server listening on port ${PORT}`);
   });
 }
 
