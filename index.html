@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IngenieroDocente - Asistente de Ingeniería de Software</title>
+    <meta name="description" content="Asistente virtual pedagógico especializado en ingeniería de software para estudiantes. Explicaciones rigurosas y estructuradas con definición, explicación paso a paso, ejemplos prácticos de código y recomendaciones técnicas verificadas." />
+    <meta property="og:title" content="IngenieroDocente - Asistente de Ingeniería de Software" />
+    <meta property="og:description" content="Asistente virtual pedagógico especializado en ingeniería de software para estudiantes. Explicaciones rigurosas y estructuradas con definición, explicación paso a paso, ejemplos prácticos de código y recomendaciones técnicas verificadas." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <script>
+      // Suppress Vite HMR WebSocket errors in AI Studio iframe preview
+      window.addEventListener('unhandledrejection', function (event) {
+        var msg = (event && event.reason && (event.reason.message || event.reason.toString())) || '';
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('vite') !== -1) {
+          event.preventDefault();
+        }
+      });
+    </script>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
+

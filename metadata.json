@@ -1,0 +1,8 @@
+{
+  "name": "Remix DevMentor",
+  "description": "Asistente virtual especializado en ingeniería de software que explica conceptos técnicos mediante ejemplos prácticos y metodología académica clara.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
