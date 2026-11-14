@@ -66,9 +66,10 @@ export const DEMO_USERS: readonly DemoUserRecord[] = [
 ];
 
 // OWASP A02:2023 – Cryptographic Failures: Retrieve JWT signing secret from environment variables.
-export function getJwtSecret(envSecret: string | undefined = process.env.JWT_SECRET): string {
-  if (typeof envSecret === 'string' && envSecret.trim().length >= 16) {
-    return envSecret.trim();
+export function getJwtSecret(...args: [envSecret?: string]): string {
+  const candidate = args.length > 0 ? args[0] : process.env.JWT_SECRET;
+  if (typeof candidate === 'string' && candidate.trim().length >= 16) {
+    return candidate.trim();
   }
   if (!cachedRuntimeSecret) {
     cachedRuntimeSecret = crypto.randomBytes(32).toString('hex');

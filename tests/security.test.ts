@@ -37,6 +37,19 @@ describe('Security Module: JWT, RBAC & OWASP Input Validation', () => {
   describe('getJwtSecret', () => {
     it('returns trimmed environment secret when length >= 16', () => {
       expect(getJwtSecret('  1234567890123456  ')).toBe('1234567890123456');
+
+      const originalEnvSecret = process.env.JWT_SECRET;
+      const dynamicEnvSecret = crypto.randomBytes(16).toString('hex');
+      process.env.JWT_SECRET = dynamicEnvSecret;
+      try {
+        expect(getJwtSecret()).toBe(dynamicEnvSecret);
+      } finally {
+        if (originalEnvSecret === undefined) {
+          delete process.env.JWT_SECRET;
+        } else {
+          process.env.JWT_SECRET = originalEnvSecret;
+        }
+      }
     });
 
     it('generates and caches a runtime cryptographic fallback when undefined, empty, or too short', () => {
